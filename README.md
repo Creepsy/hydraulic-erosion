@@ -1,2 +1,2 @@
 # hydraulic-erosion
-A hydraulic erosion simulator via a compute shader with simple load and save support for heightmaps.
+A hydraulic erosion simulator written with OpenCL with simple load and save support for heightmaps.

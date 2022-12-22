@@ -1,69 +1,61 @@
-#define CL_HPP_ENABLE_EXCEPTIONS
-#define CL_HPP_TARGET_OPENCL_VERSION 300
- 
+#include <sstream> 
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <string>
 #include <CL/opencl.hpp>
 
-const std::string KERNEL_CODE = R"(
-kernel void vector_add(global const int* vec_a, global const int* vec_b, global int* vec_out) {
-    int index = get_global_id(0);
-    vec_out[index] = vec_a[index] + vec_b[index]; 
-}
-)";
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+#undef STB_IMAGE_IMPLEMENTATION
+
+#include "kernel_loader.h"
 
 cl::Platform select_platform();
 cl::Device select_device(const cl::Platform& platform);
 
+void vector_add_test(kernel_loader::KernelContext<cl::Buffer, cl::Buffer, cl::Buffer>& vector_add_kernel);
+
 int main() {
+    const std::string KERNEL_SOURCE_PATH = "../kernel/vector_addition.cl";
+
     cl::Platform platform;
     try {
         platform = select_platform();      
-    } catch(const std::runtime_error& err) {
-        std::cerr << err.what() << std::endl;
-        return 1;
-    }
-
-    cl::Device device;
-    try {
-        device = select_device(platform);      
     } catch (const std::runtime_error& err) {
         std::cerr << err.what() << std::endl;
         return 1;
     }
 
-    cl::Context context(device);
-    cl::Program::Sources kernel_sources;
-    kernel_sources.push_back(KERNEL_CODE);
-
-    cl::Program program = cl::Program(context, kernel_sources);
-    if (program.build(device) != CL_SUCCESS) {
-        std::cerr << "Errors occured on program compilation: " << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << std::endl;
+    cl::Device target_device;
+    try {
+        target_device = select_device(platform);      
+    } catch (const std::runtime_error& err) {
+        std::cerr << err.what() << std::endl;
         return 1;
     }
 
-    std::vector<int> vec_a = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    std::vector<int> vec_b = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
-    std::vector<int> output(10, 0xdeadbeef); // funny value
+    std::ifstream kernel_source_file(KERNEL_SOURCE_PATH);
 
-    cl::Buffer buffer_a(context, vec_a.begin(), vec_a.end(), true);
-    cl::Buffer buffer_b(context, vec_b.begin(), vec_b.end(), true);
-    cl::Buffer buffer_out(context, output.begin(), output.end(), false);
-
-    cl::CommandQueue command_queue(context, device);
-    command_queue.enqueueWriteBuffer(buffer_a, CL_TRUE, 0, sizeof(int)*10, vec_a.data());
-    command_queue.enqueueWriteBuffer(buffer_b, CL_TRUE, 0, sizeof(int)*10, vec_b.data());
-
-    cl::KernelFunctor<cl::Buffer, cl::Buffer, cl::Buffer> vector_addition(program, "vector_add");
-    vector_addition(cl::EnqueueArgs(command_queue, cl::NDRange(10)), buffer_a, buffer_b, buffer_out); // what exactly are EnqueueArgs?
-
-    command_queue.enqueueReadBuffer(buffer_out, CL_TRUE, 0, sizeof(int)*10, output.data());
-
-    for (const int out : output) {
-        std::cout << out << " ";
+    if (!kernel_source_file.is_open()) {
+        std::cerr << "Unable to open kernel source file'" << KERNEL_SOURCE_PATH << "'!" << std::endl;
+        return 1;
     }
-    std::cout << std::endl;
+
+    try {
+        kernel_loader::KernelContext vector_add_kernel = kernel_loader::load_kernel_into_context<cl::Buffer, cl::Buffer, cl::Buffer>(
+            kernel_source_file, 
+            "vector_add", 
+            target_device
+        );
+        vector_add_test(vector_add_kernel);
+        kernel_source_file.close();
+    } catch (const std::runtime_error& err) {
+        std::cerr << err.what() << std::endl;
+        kernel_source_file.close();
+
+        return 1;
+    }
 }
 
 cl::Platform select_platform() {
@@ -108,4 +100,26 @@ cl::Device select_device(const cl::Platform& platform) {
     }
 
     return devices[chosen_platform];
+}
+
+void vector_add_test(kernel_loader::KernelContext<cl::Buffer, cl::Buffer, cl::Buffer>& vector_add_kernel) {
+    std::vector<int> vec_a = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    std::vector<int> vec_b = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+    std::vector<int> output(10, 0xdeadbeef); // funny value
+
+    cl::Buffer buffer_a(vector_add_kernel.context, vec_a.begin(), vec_a.end(), true);
+    cl::Buffer buffer_b(vector_add_kernel.context, vec_b.begin(), vec_b.end(), true);
+    cl::Buffer buffer_out(vector_add_kernel.context, output.begin(), output.end(), false);
+
+    vector_add_kernel.task_queue.enqueueWriteBuffer(buffer_a, CL_TRUE, 0, sizeof(int)*vec_a.size(), vec_a.data());
+    vector_add_kernel.task_queue.enqueueWriteBuffer(buffer_b, CL_TRUE, 0, sizeof(int)*vec_b.size(), vec_b.data());
+
+    vector_add_kernel.kernel_func(cl::EnqueueArgs(vector_add_kernel.task_queue, cl::NDRange(10)), buffer_a, buffer_b, buffer_out);
+
+    vector_add_kernel.task_queue.enqueueReadBuffer(buffer_out, CL_TRUE, 0, sizeof(int)*output.size(), output.data());
+
+    for (const int out : output) {
+        std::cout << out << " ";
+    }
+    std::cout << std::endl;
 }
